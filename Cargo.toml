@@ -49,6 +49,7 @@ default = []
 full = [
     "client",
     "client-legacy",
+    "client-legacy-socket2",
     "server",
     "server-auto",
     "server-graceful",
@@ -59,7 +60,8 @@ full = [
 ]
 
 client = ["hyper/client", "dep:tracing", "dep:futures-channel", "dep:tower", "dep:tower-service"]
-client-legacy = ["client", "dep:socket2", "tokio/sync"]
+client-legacy = ["client", "tokio/sync"]
+client-legacy-socket2 = ["client", "tokio/sync", "dep:socket2"]
 
 server = ["hyper/server"]
 server-auto = ["server", "http1", "http2"]
