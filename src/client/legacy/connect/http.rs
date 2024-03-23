@@ -12,8 +12,11 @@ use std::time::Duration;
 use futures_util::future::Either;
 use http::uri::{Scheme, Uri};
 use pin_project_lite::pin_project;
+#[cfg(feature = "client-legacy-socket2")]
 use socket2::TcpKeepalive;
-use tokio::net::{TcpSocket, TcpStream};
+#[cfg(feature = "client-legacy-socket2")]
+use tokio::net::TcpSocket;
+use tokio::net::TcpStream;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 
@@ -88,6 +91,7 @@ struct TcpKeepaliveConfig {
 
 impl TcpKeepaliveConfig {
     /// Converts into a `socket2::TcpKeealive` if there is any keep alive configuration.
+    #[cfg(feature = "client-legacy-socket2")]
     fn into_tcpkeepalive(self) -> Option<TcpKeepalive> {
         let mut dirty = false;
         let mut ka = TcpKeepalive::new();
@@ -108,23 +112,32 @@ impl TcpKeepaliveConfig {
         }
     }
 
-    #[cfg(not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")))]
+    #[cfg(all(
+        feature = "client-legacy-socket2",
+        not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")),
+    ))]
     fn ka_with_interval(ka: TcpKeepalive, interval: Duration, dirty: &mut bool) -> TcpKeepalive {
         *dirty = true;
         ka.with_interval(interval)
     }
 
-    #[cfg(any(target_os = "openbsd", target_os = "redox", target_os = "solaris"))]
+    #[cfg(all(
+        feature = "client-legacy-socket2",
+        any(target_os = "openbsd", target_os = "redox", target_os = "solaris"),
+    ))]
     fn ka_with_interval(ka: TcpKeepalive, _: Duration, _: &mut bool) -> TcpKeepalive {
         ka // no-op as keepalive interval is not supported on this platform
     }
 
-    #[cfg(not(any(
-        target_os = "openbsd",
-        target_os = "redox",
-        target_os = "solaris",
-        target_os = "windows"
-    )))]
+    #[cfg(all(
+        feature = "client-legacy-socket2",
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "windows"
+        )),
+    ))]
     fn ka_with_retries(ka: TcpKeepalive, retries: u32, dirty: &mut bool) -> TcpKeepalive {
         *dirty = true;
         ka.with_retries(retries)
@@ -651,6 +664,7 @@ impl ConnectingTcpRemote {
     }
 }
 
+#[cfg(feature = "client-legacy-socket2")]
 fn bind_local_address(
     socket: &socket2::Socket,
     dst_addr: &SocketAddr,
@@ -679,6 +693,27 @@ fn bind_local_address(
     Ok(())
 }
 
+#[cfg(not(feature = "client-legacy-socket2"))]
+fn connect(
+    addr: &SocketAddr,
+    _config: &Config,
+    connect_timeout: Option<Duration>,
+) -> Result<impl Future<Output = Result<TcpStream, ConnectError>>, ConnectError> {
+    let connect = TcpStream::connect(*addr);
+    Ok(async move {
+        match connect_timeout {
+            Some(dur) => match tokio::time::timeout(dur, connect).await {
+                Ok(Ok(s)) => Ok(s),
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(io::Error::new(io::ErrorKind::TimedOut, e)),
+            },
+            None => connect.await,
+        }
+        .map_err(ConnectError::m("tcp connect error"))
+    })
+}
+
+#[cfg(feature = "client-legacy-socket2")]
 fn connect(
     addr: &SocketAddr,
     config: &Config,
