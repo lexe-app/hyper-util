@@ -412,6 +412,7 @@ fn get_host_port<'u>(config: &Config, dst: &'u Uri) -> Result<(&'u str, u16), Co
     Ok((host, port))
 }
 
+#[cfg(not(target_env = "sgx"))]
 impl<R> HttpConnector<R>
 where
     R: Resolve,
@@ -448,6 +449,32 @@ where
         }
 
         Ok(TokioIo::new(sock))
+    }
+}
+
+// - We can't resolve DNS names in SGX, so we remove the DNS resolution step.
+// - The SGX version of `TcpStream::connect` requires string addresses.
+#[cfg(target_env = "sgx")]
+impl<R> HttpConnector<R> {
+    async fn call_async(&mut self, dst: Uri) -> Result<TokioIo<TcpStream>, ConnectError> {
+        let config = &self.config;
+
+        let (host, port) = get_host_port(config, &dst)?;
+        let addr_str = format!("{}:{}", host, port);
+
+        let connect = TcpStream::connect(addr_str);
+
+        let tcp_stream = match config.connect_timeout {
+            Some(dur) => tokio::time::timeout(dur, connect)
+                .await
+                .map_err(ConnectError::m("Timed out trying to connect"))?
+                .map_err(ConnectError::m("TCP connect failed (1)"))?,
+            None => connect
+                .await
+                .map_err(ConnectError::m("TCP connect failed (2)"))?,
+        };
+
+        Ok(TokioIo::new(tcp_stream))
     }
 }
 
